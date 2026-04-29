@@ -18,9 +18,9 @@ const measurementsSchema = new mongoose.Schema({
 }, { _id: false });
 
 const userSchema = new mongoose.Schema({
-  firebaseUid: { type: String, unique: true, sparse: true },
-  email:       { type: String, required: true, unique: true, lowercase: true, trim: true },
-  name:        { type: String, default: '' },
+  email:    { type: String, required: true, unique: true, lowercase: true, trim: true },
+  password: { type: String, default: '', select: false },
+  name:     { type: String, default: '' },
   phone:       { type: String, default: '' },
   role:        { type: String, enum: ['admin', 'customer', 'worker'], default: 'customer' },
   initials:    { type: String, default: '' },

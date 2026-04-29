@@ -1,5 +1,6 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
@@ -21,11 +22,12 @@ async function seed() {
 
   await Promise.all([User.deleteMany({}), Order.deleteMany({}), Product.deleteMany({})]);
 
-  // NOTE: firebaseUid is left empty in seed — set it after creating real Firebase accounts
-  // or use Firebase's "Import users" feature with the test emails below.
+  const adminPass  = await bcrypt.hash('admin123', 10);
+  const custPass   = await bcrypt.hash('customer123', 10);
 
   const admin = await User.create({
     email: 'admin@sagaan.in',
+    password: adminPass,
     name: 'Master Ravi',
     role: 'admin',
     shopName: 'Sagaan Atelier',
@@ -42,20 +44,12 @@ async function seed() {
 
   const customers = await User.insertMany([
     {
-      email: 'arjun.mehta@gmail.com', name: 'Arjun Mehta', role: 'customer', initials: 'AM',
+      email: 'arjun.mehta@gmail.com', password: custPass, name: 'Arjun Mehta', role: 'customer', initials: 'AM',
       measurements: { chest: 40, shoulder: 18, waist: 34, hip: 40, sleeve: 25, neck: 15.5, inseam: 30, armhole: 20, biceps: 13.5 },
     },
     {
-      email: 'farah.sheikh@yahoo.com', name: 'Farah Sheikh', role: 'customer', initials: 'FS',
+      email: 'farah.sheikh@yahoo.com', password: custPass, name: 'Farah Sheikh', role: 'customer', initials: 'FS',
       measurements: { chest: 36, shoulder: 15, waist: 28, hip: 36, sleeve: 23, neck: 14, inseam: 28, armhole: 17, biceps: 11.5 },
-    },
-    {
-      email: 'rohit.singh@gmail.com', name: 'Rohit Singh', role: 'customer', initials: 'RS',
-      measurements: { chest: 42, shoulder: 18.5, waist: 36, hip: 41, sleeve: 25.5, neck: 16, inseam: 31, armhole: 21, biceps: 14 },
-    },
-    {
-      email: 'priya.nair@outlook.com', name: 'Priya Nair', role: 'customer', initials: 'PN',
-      measurements: { chest: 34, shoulder: 14.5, waist: 26, hip: 35, sleeve: 22.5, neck: 13.5, inseam: 27, armhole: 16, biceps: 11 },
     },
   ]);
 
@@ -64,9 +58,9 @@ async function seed() {
 
   await Order.insertMany([
     {
-      customer: customers[0]._id, product: 'Biella Two-Piece', fabric: 'Midnight super-130',
-      fabricClass: 'midnight-wool', stage: 'stitching', assignedTo: workers[1]._id,
-      dueDate: days(7), price: 48900, paid: 25000, channel: 'app',
+      customer: customers[0]._id, product: 'Simple Pant', stage: 'stitching', assignedTo: workers[1]._id,
+      dueDate: days(7), price: 800, paid: 400, channel: 'app',
+      garmentCategory: 'Pant', garmentDesign: 'Simple Pant',
       history: [
         { stage: 'measured',  at: days(-5), byName: 'Master Ravi', byId: admin._id },
         { stage: 'cutting',   at: days(-2), byName: 'Ravi Kaka',   byId: workers[0]._id },
@@ -74,9 +68,9 @@ async function seed() {
       ],
     },
     {
-      customer: customers[1]._id, product: 'Silk Kurta Set', fabric: 'Champagne silk',
-      fabricClass: 'champagne-silk', stage: 'finishing', assignedTo: workers[3]._id,
-      dueDate: days(3), price: 18500, paid: 18500, channel: 'shop',
+      customer: customers[1]._id, product: 'Simple Kurta', stage: 'finishing', assignedTo: workers[3]._id,
+      dueDate: days(3), price: 1200, paid: 1200, channel: 'shop',
+      garmentCategory: 'Jabba', garmentDesign: 'Simple Kurta',
       history: [
         { stage: 'measured',  at: days(-8), byName: 'Master Ravi', byId: admin._id },
         { stage: 'cutting',   at: days(-6), byName: 'Ravi Kaka',   byId: workers[0]._id },
@@ -84,44 +78,14 @@ async function seed() {
         { stage: 'finishing', at: days(-2), byName: 'Kishan',      byId: workers[3]._id },
       ],
     },
-    {
-      customer: customers[2]._id, product: 'Oxford Shirt × 3', fabric: 'Ivory linen',
-      fabricClass: 'ivory-linen', stage: 'ready', assignedTo: workers[4]._id,
-      dueDate: days(1), price: 12600, paid: 12600, channel: 'shop',
-      history: [
-        { stage: 'measured',  at: days(-12), byName: 'Master Ravi', byId: admin._id },
-        { stage: 'cutting',   at: days(-10), byName: 'Ravi Kaka',   byId: workers[0]._id },
-        { stage: 'stitching', at: days(-7),  byName: 'Imran',       byId: workers[1]._id },
-        { stage: 'finishing', at: days(-4),  byName: 'Kishan',      byId: workers[3]._id },
-        { stage: 'ready',     at: days(-2),  byName: 'Meera',       byId: workers[4]._id },
-      ],
-    },
-    {
-      customer: customers[3]._id, product: 'Anarkali, full set', fabric: 'Oxblood twill',
-      fabricClass: 'oxblood-twill', stage: 'cutting', assignedTo: workers[0]._id,
-      dueDate: days(14), price: 32400, paid: 10000, channel: 'app',
-      history: [
-        { stage: 'measured', at: days(-3), byName: 'Master Ravi', byId: admin._id },
-        { stage: 'cutting',  at: days(-1), byName: 'Ravi Kaka',   byId: workers[0]._id },
-      ],
-    },
-    {
-      customer: customers[0]._id, product: 'Linen Bandhgala', fabric: 'Ivory linen',
-      fabricClass: 'ivory-linen', stage: 'measured', assignedTo: null,
-      dueDate: days(18), price: 22000, paid: 0, channel: 'shop',
-      history: [
-        { stage: 'measured', at: days(-1), byName: 'Master Ravi', byId: admin._id },
-      ],
-    },
   ]);
 
   await Product.insertMany(PRODUCTS.map((p, i) => ({ ...p, sortOrder: i })));
 
   console.log('✓ Seeded successfully');
-  console.log('\nTest accounts (create these in Firebase → Authentication → Users):');
-  console.log('  admin@sagaan.in       — role: admin');
-  console.log('  arjun.mehta@gmail.com — role: customer');
-  console.log('  farah.sheikh@yahoo.com — role: customer');
+  console.log('\nTest accounts:');
+  console.log('  admin@sagaan.in       / admin123    — role: admin');
+  console.log('  arjun.mehta@gmail.com / customer123 — role: customer');
   process.exit(0);
 }
 
