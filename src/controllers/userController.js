@@ -77,4 +77,16 @@ async function createWorker(req, res) {
   }
 }
 
-module.exports = { listCustomers, listWorkers, getUser, updateMe, updateMeasurements, createWorker };
+// DELETE /api/users/workers/:id (admin only)
+async function deleteWorker(req, res) {
+  try {
+    const worker = await User.findById(req.params.id);
+    if (!worker || worker.role !== 'worker') return res.status(404).json({ message: 'Worker not found' });
+    await User.findByIdAndDelete(req.params.id);
+    res.json({ message: 'Worker removed' });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+module.exports = { listCustomers, listWorkers, getUser, updateMe, updateMeasurements, createWorker, deleteWorker };
