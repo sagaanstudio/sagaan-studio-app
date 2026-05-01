@@ -58,20 +58,27 @@ async function getOrder(req, res) {
 
 // POST /api/orders
 async function createOrder(req, res) {
-  const { customerId, product, fabric, fabricClass, dueDate, price, channel, notes } = req.body;
+  const {
+    customerId, product, fabric, fabricClass,
+    garmentCategory, garmentDesign, customizations,
+    dueDate, price, channel, notes,
+  } = req.body;
 
   const customer = await User.findById(customerId || req.user._id);
   if (!customer) return res.status(404).json({ message: 'Customer not found' });
 
   const order = await Order.create({
-    customer: customer._id,
-    product,
-    fabric,
-    fabricClass,
+    customer:        customer._id,
+    product:         product || garmentDesign || garmentCategory || 'Custom Order',
+    garmentCategory: garmentCategory || '',
+    garmentDesign:   garmentDesign   || '',
+    customizations:  customizations  || {},
+    fabric:          fabric          || '',
+    fabricClass:     fabricClass     || '',
     dueDate,
-    price,
-    channel: channel || 'app',
-    notes,
+    price:           Number(price)   || 0,
+    channel:         channel         || 'app',
+    notes:           notes           || '',
     stage: 'measured',
     history: [{
       stage: 'measured',
@@ -137,7 +144,7 @@ async function recordPayment(req, res) {
 
 // PATCH /api/orders/:id
 async function updateOrder(req, res) {
-  const allowed = ['notes', 'dueDate', 'price', 'fabric', 'fabricClass', 'product'];
+  const allowed = ['notes', 'dueDate', 'price', 'fabric', 'fabricClass', 'product', 'garmentCategory', 'garmentDesign', 'customizations', 'stage'];
   const updates = Object.fromEntries(
     Object.entries(req.body).filter(([k]) => allowed.includes(k))
   );
@@ -152,7 +159,11 @@ async function updateOrder(req, res) {
 
 // GET /api/orders/stats (admin only)
 async function getStats(req, res) {
-  const [byStage, revenue] = await Promise.all([
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const startOfYear  = new Date(now.getFullYear(), 0, 1);
+
+  const [byStage, revenue, monthly, yearly] = await Promise.all([
     Order.aggregate([
       { $match: { isDeleted: false } },
       { $group: { _id: '$stage', count: { $sum: 1 } } },
@@ -166,18 +177,33 @@ async function getStats(req, res) {
         totalOrders: { $sum: 1 },
       }},
     ]),
+    Order.aggregate([
+      { $match: { isDeleted: false, createdAt: { $gte: startOfMonth } } },
+      { $group: { _id: null, revenue: { $sum: '$price' }, orders: { $sum: 1 } } },
+    ]),
+    Order.aggregate([
+      { $match: { isDeleted: false, createdAt: { $gte: startOfYear } } },
+      { $group: { _id: null, revenue: { $sum: '$price' }, orders: { $sum: 1 } } },
+    ]),
   ]);
 
   const stageMap = Object.fromEntries(byStage.map(s => [s._id, s.count]));
   const rev = revenue[0] || { totalRevenue: 0, totalCollected: 0, totalOrders: 0 };
+  const mon = monthly[0] || { revenue: 0, orders: 0 };
+  const yr  = yearly[0]  || { revenue: 0, orders: 0 };
 
   res.json({
-    byStage: stageMap,
-    inProgress: (stageMap.measured || 0) + (stageMap.cutting || 0) + (stageMap.stitching || 0) + (stageMap.finishing || 0),
-    ready: stageMap.ready || 0,
-    totalOrders: rev.totalOrders,
-    totalRevenue: rev.totalRevenue,
+    byStage:        stageMap,
+    inProgress:     (stageMap.measured || 0) + (stageMap.cutting || 0) + (stageMap.stitching || 0) + (stageMap.finishing || 0),
+    ready:          stageMap.ready || 0,
+    totalOrders:    rev.totalOrders,
+    totalRevenue:   rev.totalRevenue,
+    totalCollected: rev.totalCollected,
     pendingPayment: rev.totalRevenue - rev.totalCollected,
+    monthlyRevenue: mon.revenue,
+    monthlyOrders:  mon.orders,
+    yearlyRevenue:  yr.revenue,
+    yearlyOrders:   yr.orders,
   });
 }
 
