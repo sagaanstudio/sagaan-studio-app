@@ -12,6 +12,7 @@ const productSchema = new mongoose.Schema({
   basePrice:   { type: Number, required: true },
   variants:    [variantSchema],
   images:      [{ type: String }],
+  itemCode:    { type: String, default: '' },
   isActive:    { type: Boolean, default: true },
   sortOrder:   { type: Number, default: 0 },
 }, { timestamps: true });

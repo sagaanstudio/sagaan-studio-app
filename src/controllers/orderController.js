@@ -1,24 +1,36 @@
 const Order = require('../models/Order');
 const User = require('../models/User');
 
-const STAGES = ['measured', 'cutting', 'stitching', 'finishing', 'ready'];
+const PRODUCTION_STATUSES = ['cutting', 'stitching', 'finishing', 'ready', 'delivered'];
+const NEXT_STATUS = {
+  approved:   'assigned',
+  assigned:   'cutting',
+  cutting:    'stitching',
+  stitching:  'finishing',
+  finishing:  'ready',
+  ready:      'delivered',
+};
 
-// GET /api/orders  (admin: all; customer: own)
+// GET /api/orders
 async function listOrders(req, res) {
-  const { stage, assignedTo, search, page = 1, limit = 20 } = req.query;
+  const { status, search, page = 1, limit = 50, assignedTo, pending } = req.query;
   const query = { isDeleted: false };
 
   if (req.user.role === 'customer') {
     query.customer = req.user._id;
   }
-  if (stage) query.stage = stage;
+  if (req.user.role === 'worker') {
+    query.assignedTo = req.user._id;
+  }
+  if (status) query.status = { $in: status.split(',') };
   if (assignedTo) query.assignedTo = assignedTo;
+  if (pending === 'approval') query.status = 'pending_approval';
 
   if (search) {
     const customers = await User.find({
       $or: [
         { name:  { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } },
       ],
     }).select('_id');
     const ids = customers.map(c => c._id);
@@ -31,7 +43,7 @@ async function listOrders(req, res) {
   const [orders, total] = await Promise.all([
     Order.find(query)
       .populate('customer', 'name phone initials')
-      .populate('assignedTo', 'name workerRole avatar load')
+      .populate('assignedTo', 'name workerRole initials load')
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(Number(limit)),
@@ -44,8 +56,8 @@ async function listOrders(req, res) {
 // GET /api/orders/:id
 async function getOrder(req, res) {
   const order = await Order.findById(req.params.id)
-    .populate('customer', 'name phone initials measurements')
-    .populate('assignedTo', 'name workerRole avatar load');
+    .populate('customer', 'name phone initials measurements email')
+    .populate('assignedTo', 'name workerRole initials load');
 
   if (!order || order.isDeleted) return res.status(404).json({ message: 'Order not found' });
 
@@ -67,6 +79,11 @@ async function createOrder(req, res) {
   const customer = await User.findById(customerId || req.user._id);
   if (!customer) return res.status(404).json({ message: 'Customer not found' });
 
+  // Admin/walk-in orders skip payment+approval and start at 'approved'
+  // User app orders start at 'pending_payment'
+  const isAdminOrder = ['admin', 'worker'].includes(req.user.role);
+  const initialStatus = isAdminOrder ? 'approved' : 'pending_payment';
+
   const order = await Order.create({
     customer:        customer._id,
     product:         product || garmentDesign || garmentCategory || 'Custom Order',
@@ -77,14 +94,15 @@ async function createOrder(req, res) {
     fabricClass:     fabricClass     || '',
     dueDate,
     price:           Number(price)   || 0,
-    channel:         channel         || 'app',
+    channel:         channel         || (isAdminOrder ? 'shop' : 'app'),
     notes:           notes           || '',
-    stage: 'measured',
+    status: initialStatus,
     history: [{
-      stage: 'measured',
-      at: new Date(),
-      byName: req.user.name || 'Admin',
-      byId: req.user._id,
+      status: initialStatus,
+      at:     new Date(),
+      byName: req.user.name || 'System',
+      byId:   req.user._id,
+      note:   isAdminOrder ? 'Order created by admin' : 'Order placed by customer',
     }],
   });
 
@@ -92,32 +110,86 @@ async function createOrder(req, res) {
   res.status(201).json(order);
 }
 
-// PATCH /api/orders/:id/stage  — advance to next stage
-async function advanceStage(req, res) {
+// PATCH /api/orders/:id/approve
+async function approveOrder(req, res) {
   const order = await Order.findById(req.params.id);
-  if (!order || order.isDeleted) return res.status(404).json({ message: 'Order not found' });
+  if (!order) return res.status(404).json({ message: 'Order not found' });
+  if (order.status !== 'pending_approval') {
+    return res.status(400).json({ message: 'Order is not pending approval' });
+  }
 
-  const nextIndex = order.stageIndex + 1;
-  if (nextIndex > 4) return res.status(400).json({ message: 'Order already complete' });
-
-  const nextStage = STAGES[nextIndex];
-  order.stage = nextStage;
+  order.status = 'approved';
+  order.approvedAt = new Date();
+  order.approvedBy = req.user._id;
   order.history.push({
-    stage: nextStage,
+    status: 'approved',
     at: new Date(),
     byName: req.user.name,
     byId: req.user._id,
+    note: req.body.note || 'Approved by admin',
   });
 
   await order.save();
   await order.populate('customer', 'name phone initials');
-  await order.populate('assignedTo', 'name workerRole avatar load');
+  await order.populate('assignedTo', 'name workerRole initials load');
+  res.json(order);
+}
+
+// PATCH /api/orders/:id/reject
+async function rejectOrder(req, res) {
+  const order = await Order.findById(req.params.id);
+  if (!order) return res.status(404).json({ message: 'Order not found' });
+  if (!['pending_approval', 'pending_payment'].includes(order.status)) {
+    return res.status(400).json({ message: 'Cannot reject this order' });
+  }
+
+  order.status = 'rejected';
+  order.rejectedAt = new Date();
+  order.rejectedReason = req.body.reason || '';
+  order.history.push({
+    status: 'rejected',
+    at: new Date(),
+    byName: req.user.name,
+    byId: req.user._id,
+    note: req.body.reason || 'Rejected by admin',
+  });
+
+  await order.save();
+  await order.populate('customer', 'name phone initials');
+  res.json(order);
+}
+
+// PATCH /api/orders/:id/status  — advance to next status
+async function advanceStatus(req, res) {
+  const order = await Order.findById(req.params.id);
+  if (!order || order.isDeleted) return res.status(404).json({ message: 'Order not found' });
+
+  const nextStatus = NEXT_STATUS[order.status];
+  if (!nextStatus) return res.status(400).json({ message: 'Cannot advance from current status' });
+
+  // Assigned status requires assignedTo
+  if (order.status === 'approved' && !order.assignedTo) {
+    return res.status(400).json({ message: 'Assign a karigar before advancing' });
+  }
+
+  order.status = nextStatus;
+  order.history.push({
+    status: nextStatus,
+    at: new Date(),
+    byName: req.user.name,
+    byId: req.user._id,
+    note: req.body.note || '',
+  });
+
+  await order.save();
+  await order.populate('customer', 'name phone initials');
+  await order.populate('assignedTo', 'name workerRole initials load');
   res.json(order);
 }
 
 // PATCH /api/orders/:id/assign
 async function assignWorker(req, res) {
-  const { workerId } = req.body;
+  const { workerId, stitchingNotes } = req.body;
   const order = await Order.findById(req.params.id);
   if (!order) return res.status(404).json({ message: 'Order not found' });
 
@@ -127,7 +199,23 @@ async function assignWorker(req, res) {
   }
 
   order.assignedTo = worker._id;
+  if (stitchingNotes) order.stitchingNotes = stitchingNotes;
+
+  // Auto-advance from approved to assigned
+  if (order.status === 'approved') {
+    order.status = 'assigned';
+    order.history.push({
+      status: 'assigned',
+      at: new Date(),
+      byName: req.user.name,
+      byId: req.user._id,
+      note: `Assigned to ${worker.name}`,
+    });
+  }
+
   await order.save();
+  await order.populate('customer', 'name phone initials');
+  await order.populate('assignedTo', 'name workerRole initials load');
   res.json(order);
 }
 
@@ -138,43 +226,55 @@ async function recordPayment(req, res) {
   if (!order) return res.status(404).json({ message: 'Order not found' });
 
   order.paid = Math.min(order.paid + Number(amount), order.price);
+
+  // Auto-advance: if 50% or more is paid, move from pending_payment to pending_approval
+  if (order.status === 'pending_payment' && order.price > 0 && order.paid >= order.price * 0.5) {
+    order.status = 'pending_approval';
+    order.history.push({
+      status: 'pending_approval',
+      at: new Date(),
+      byName: 'System',
+      note: `50% advance received (₹${order.paid}) — awaiting admin approval`,
+    });
+  }
+
   await order.save();
   res.json(order);
 }
 
 // PATCH /api/orders/:id
 async function updateOrder(req, res) {
-  const allowed = ['notes', 'dueDate', 'price', 'fabric', 'fabricClass', 'product', 'garmentCategory', 'garmentDesign', 'customizations', 'stage'];
+  const allowed = ['notes', 'stitchingNotes', 'dueDate', 'price', 'fabric', 'fabricClass', 'product', 'garmentCategory', 'garmentDesign', 'customizations', 'status'];
   const updates = Object.fromEntries(
     Object.entries(req.body).filter(([k]) => allowed.includes(k))
   );
 
   const order = await Order.findByIdAndUpdate(req.params.id, updates, { new: true })
     .populate('customer', 'name phone initials')
-    .populate('assignedTo', 'name workerRole avatar');
+    .populate('assignedTo', 'name workerRole initials');
 
   if (!order) return res.status(404).json({ message: 'Order not found' });
   res.json(order);
 }
 
-// GET /api/orders/stats (admin only)
+// GET /api/orders/stats
 async function getStats(req, res) {
   const now = new Date();
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   const startOfYear  = new Date(now.getFullYear(), 0, 1);
 
-  const [byStage, revenue, monthly, yearly] = await Promise.all([
+  const [byStatus, revenue, monthly, yearly] = await Promise.all([
     Order.aggregate([
       { $match: { isDeleted: false } },
-      { $group: { _id: '$stage', count: { $sum: 1 } } },
+      { $group: { _id: '$status', count: { $sum: 1 } } },
     ]),
     Order.aggregate([
       { $match: { isDeleted: false } },
       { $group: {
         _id: null,
-        totalRevenue: { $sum: '$price' },
+        totalRevenue:   { $sum: '$price' },
         totalCollected: { $sum: '$paid' },
-        totalOrders: { $sum: 1 },
+        totalOrders:    { $sum: 1 },
       }},
     ]),
     Order.aggregate([
@@ -187,24 +287,30 @@ async function getStats(req, res) {
     ]),
   ]);
 
-  const stageMap = Object.fromEntries(byStage.map(s => [s._id, s.count]));
+  const statusMap = Object.fromEntries(byStatus.map(s => [s._id, s.count]));
   const rev = revenue[0] || { totalRevenue: 0, totalCollected: 0, totalOrders: 0 };
   const mon = monthly[0] || { revenue: 0, orders: 0 };
   const yr  = yearly[0]  || { revenue: 0, orders: 0 };
 
+  const inProduction = (statusMap.assigned || 0) + (statusMap.cutting || 0) + (statusMap.stitching || 0) + (statusMap.finishing || 0);
+
   res.json({
-    byStage:        stageMap,
-    inProgress:     (stageMap.measured || 0) + (stageMap.cutting || 0) + (stageMap.stitching || 0) + (stageMap.finishing || 0),
-    ready:          stageMap.ready || 0,
-    totalOrders:    rev.totalOrders,
-    totalRevenue:   rev.totalRevenue,
-    totalCollected: rev.totalCollected,
-    pendingPayment: rev.totalRevenue - rev.totalCollected,
-    monthlyRevenue: mon.revenue,
-    monthlyOrders:  mon.orders,
-    yearlyRevenue:  yr.revenue,
-    yearlyOrders:   yr.orders,
+    byStatus,
+    statusMap,
+    pendingApproval: statusMap.pending_approval || 0,
+    pendingPayment:  statusMap.pending_payment  || 0,
+    inProduction,
+    ready:           statusMap.ready      || 0,
+    delivered:       statusMap.delivered  || 0,
+    totalOrders:     rev.totalOrders,
+    totalRevenue:    rev.totalRevenue,
+    totalCollected:  rev.totalCollected,
+    pendingCollection: rev.totalRevenue - rev.totalCollected,
+    monthlyRevenue:  mon.revenue,
+    monthlyOrders:   mon.orders,
+    yearlyRevenue:   yr.revenue,
+    yearlyOrders:    yr.orders,
   });
 }
 
-module.exports = { listOrders, getOrder, createOrder, advanceStage, assignWorker, recordPayment, updateOrder, getStats };
+module.exports = { listOrders, getOrder, createOrder, approveOrder, rejectOrder, advanceStatus, assignWorker, recordPayment, updateOrder, getStats };
